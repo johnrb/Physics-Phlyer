@@ -1,0 +1,25 @@
+Phlyer Details
+
+
+BTA Extender Cable Colors
+
+Pin	Function		Color
+1	Sensor Out +/-10	White
+2	GND			Black		Connected to Arduino GND
+3	V res  Resist Refernce	Red
+4	Auto ID			Green
+5	+5 V Power		Yellow		Supplied by Display Panel
+6	Sensor Out 0 - +5V	Blue		Connected to Arduino A0 input
+
+
+BTD Extender Cable Colors
+
+Pin	Function	Color
+1	CCW		Blue		Connected to Arduino D5 input
+2	CW		Yellow		Connected to Arduino D6 input
+3	--		Green
+4	5V Power	Red		Supplied by 
+5	GND		Black		Connected to Arduino GND
+6	x4		White
+
+
