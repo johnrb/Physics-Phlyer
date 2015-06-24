@@ -1,8 +1,9 @@
-/*********************
+/*****************************************************
 Program for Physics Phlyer
 Input from Force Plate and Rotary Motion Sensors
 Output to Bar Graph Displays
-**********************/
+Written by John Buschert 2014 & 2015
+******************************************************/
 #include <Wire.h>  // For the I2C communication used by 
 #include <Adafruit_GFX.h> // Graphics Library used by LEDBackpack routines
 #include <Adafruit_LEDBackpack.h>  // Bar graph control
@@ -26,14 +27,15 @@ int DisBattpin = 2;  // Display Battery Voltage input pin
 // initializing variables
 byte buttons = 0;
 byte mainopt = 1;  // Main Menu Option
-int n = 5;  // A number to adjust for testing
+int nReads = 100;  // Number of force readings to average
 int zeroF = 230;  // Forceplate zero level
-long int time0, time1;   // time of this and last interrupt
-long  pos = 0;  // position
-float vel0, vel1;  // this velocity and the last velocity
-float accel0;
-float distance = 50000.0;  // This scales the velocity
-boolean accelTrue;
+long int t0, t1;   // Last time and current time
+long int currentTime; // Current time kept by interrupt routintes in usec
+long int currentPos; // Current position kept by interrupt routines in 0.1 mm
+long  x0, x1 = 0;  // last position adn this position
+float v0, v1 = 0;  // last velocity and this velocity
+float a0, a1 = 0;  // last acceleration and this acceleration
+boolean showAccel = 1;  // Show the acceleration graph
 float ardBattVoltage;
 float disBattVoltage;
 
@@ -59,17 +61,7 @@ void setup() {
   Serial.print("finding batt 2");
   delay(500);
 
-  // Display the Battery Voltages
-  ardBattVoltage = analogRead(ArdBattpin) / 102.4;
-  disBattVoltage = analogRead(DisBattpin) / 102.4;
-  Serial.write(12);  // clear display
-  delay(1000);
-  Serial.print("Ard Bat = ");
-  Serial.print(ardBattVoltage);
-  Serial.write(148);  // cursor to Line 2
-  Serial.print("Dis Bat = ");
-  Serial.print(disBattVoltage);
-  delay(2500);
+  batteryVoltages();  // Show the battery voltages on startup
    
   // get scale values from eeprom memory
   EEPROM.get( eeAddrVelo, veloScale );
@@ -113,10 +105,11 @@ void loop() {
   if (mainopt == 5) {Serial.print("Scale Force     ");}
   if (mainopt == 6) {Serial.print("Zero Force      ");}  
   if (mainopt == 7) {Serial.print("Reset Scaling   ");}  
+  if (mainopt == 8) {Serial.print("Battery Voltages");}  
 
   delay(100);
 
-  #define TOP 7  // This must be set to the number of menu options
+  #define TOP 8  // This must be set to the number of menu options
   
 // check the buttons and respond by changing the menu
   buttons = checkButtons();  // 'buttons' value depends on what was presssed
@@ -129,12 +122,13 @@ void loop() {
 // if select is pressed, then call the function of that menu item
     if (buttons == 3) {
       if (mainopt == 1) everything();
-      if (mainopt == 2) toggle(accelTrue, "accel");
+      if (mainopt == 2) toggle(showAccel, "Show accel");
       if (mainopt == 3) adjust(veloScale, "Veloc");
       if (mainopt == 4) adjust(accelScale,"Accel");
       if (mainopt == 5) adjust(forceScale,"Force");
       if (mainopt == 6) zeroForce();
       if (mainopt == 7) resetScaling();
+      if (mainopt == 8) batteryVoltages();
      }
     Serial.write(12);  // button press has been handled so clear before rewriting
     delay(200);    // Wait until button is no longer pressed
@@ -143,41 +137,21 @@ void loop() {
 
 //// --------------------------------------- functions called by the menu -------------------------
 
-// toggle the boolean value of ctrl
+// toggle the boolean value of ctrl   ........................Used to turn Accel display on and off..........................
 void toggle(boolean &ctrl, char* label ) {
   Serial.write(12);
   delay(1000);
-  while(1) {
-    Serial.write(128);
-    Serial.print(label);   
-    Serial.print(" is ");   
-    Serial.print(ctrl);   
-    byte buttons = checkButtons();
-    if ((buttons == 1) || (buttons == 2)) {                // Up button increases scale
-      ctrl = !ctrl;
-    }
-    if (buttons == 3) {return;}
-  }
-  delay(2000);
+  
+  ctrl = !ctrl;
+  Serial.print(label);   
+  Serial.write(148);  //set cursor to 2nd line
+  Serial.print(" is now ");   
+  if (ctrl) { Serial.print("TRUE"); }
+  else {Serial.print("FALSE"); }
+  delay(2000);    
 }
 
-// Adjust a number using the up and down buttons
-void setValue() {
-  Serial.write(12);  // clear display
-  while(1) {
-    Serial.write(128);  //set cursor to home position
-    Serial.print("N = ");
-    Serial.print(n);
-    Serial.print("  ");
-    delay(100);
-    byte buttons = checkButtons();
-    if (buttons == 1) {n++;}  // Up button increments number
-    if (buttons == 2) {n--;}   // Down button decrements number
-    if (buttons == 3) {return;}
-  }
-}
-
-// Adjust a floating value using the up and down buttons with a log scale
+// Adjust a floating value using the up and down buttons with a log scale ............Used to adjust all the scale values................................
 void adjust(float &scale, char* label ) {
   float cycle[20] = {1.0,1.2,1.5,1.8,2.2,2.7,3.3,3.9,4.7,5.6,6.8,7.5,10};
   int cyclesize=12;
@@ -235,25 +209,33 @@ void adjust(float &scale, char* label ) {
   }
 }
 
-//Zero the Force Plate
+//Zero the Force Plate  ..................................................
 void zeroForce() {
   Serial.write(12);  // clear display
-  long int total = 0;
-  for (int i=0; i<20*n; i++) {
-    total = total + analogRead(Forcepin);
-  }
-  zeroF = total / (20*n);
+  zeroF = zeroF + readForce();
   Serial.print("zero = ");
   Serial.print(zeroF);
   Serial.print("  ");
   delay(2000);
 }
 
-// Reset scale values to original values
+//Read the Force Plate............... Averages over nReads and subtracts the zeroF .................................................................
+long readForce() {               //             returns a long integer. Values are in units of 5N if force plate switch is to left for max range.  .                                  
+
+    long int force = 0;
+    for (int i=0; i<nReads; i++) {
+      force = force + analogRead(Forcepin) - zeroF;
+    }
+    force = force / nReads;
+    return(force);
+}
+
+
+// Reset scale values to original values ..................................................
 void resetScaling() {
-  veloScale = 1.0;
-  accelScale = 1.0;
-  forceScale = 1.0;
+  veloScale = 56.0;
+  accelScale = 0.47;
+  forceScale = 0.18;
 
   // put scale values into eeprom memory
   EEPROM.put( eeAddrVelo, veloScale );
@@ -262,15 +244,12 @@ void resetScaling() {
   
 }
 
-// Everything !! Bar Graph of velocity and Acceleration and Force
+// Everything !! Bar Graph of velocity and Acceleration and Force ...........................................................
 void everything() {
-  float xforce; 
-  int force ;
-  long int totalf;
-  int shift = 10;  // Time increment for velocities in ms
-  long int time, timePoint;
-  float velOld, velNew;
-  timePoint = millis() >> shift + 1 << shift; // round off and add one to get new timepoint
+  float fforce; 
+  long int time, timePoint, dt;
+
+  timePoint = millis(); 
 
   attachInterrupt(0, ISR_CW, RISING);
   attachInterrupt(1, ISR_CCW, FALLING);
@@ -279,40 +258,63 @@ void everything() {
   
   while( checkButtons()==0 ) {
   
-    // update velocity and acceleration if we've reached the next timepoint to do so
+    // update values of t,x,v,a if we've reached the next timepoint to do so
     if (millis() >= timePoint) {
-      velOld = velNew;
-      velNew = vel0;
-      accel0 = accelScale * (velNew - velOld);
+      // determine measured values of t,x,v,a
+      t1 = currentTime;   // in microseconds
+      x1 = currentPos;    // in 0.1 mm
+      dt = t1-t0;   //  this will be close to 50,000 usec
+      if(dt>0) {
+        v1 = veloScale * 100 * (x1-x0)/dt;  // in m/s if scale is 1.0
+        a1 = accelScale * 1e6 * (v1-v0)/dt;  // in m/s2 if scale is 1.0
+      }
+      else {
+        v1 = 0;
+        a1 = 0;
+      }
+      
+      //  Update all the graphs
+      graphV(int(v1));   
+      if (showAccel) { graphA(int(a1)); }  
+      fforce = forceScale * readForce();    
+      graphF2(fforce);
+      
+      // Print values on display
+      Serial.write(128);  //set cursor to home position
+      Serial.print("a=");
+      Serial.print(a1);
+      Serial.write(148);  //set cursor to 2nd line
+      Serial.print("v=");
+      Serial.print(v1);
+
+      // advance to next time increment and set new timePoint
+      t0 = t1;
+      x0 = x1;
+      v0 = v1;
+      a0 = a1;
       timePoint = millis() + 50;
-//      timePoint = millis() >> shift + 1 << shift; // round off and add one to get new timepoint
     }    
-
-    graphV(int(velNew));
-    if (accelTrue) {
-      graphA(int(accel0));
-    }
-
-    // show force bar
-    totalf = 0;
-    for (int i=0; i<20*n; i++) {
-      force = analogRead(Forcepin) - zeroF;
-      totalf = totalf + force;
-    }
-    xforce = forceScale * totalf / (20*n);    
-    graphF2(xforce);
     
   }
- 
   detachInterrupt(0);
   detachInterrupt(1);
 }
-
+// Show battery voltages on display ........................
+void batteryVoltages() {
+  Serial.write(12);  // clear display
+  delay(1000);
+  Serial.print("Dis Bat = ");
+  Serial.print(analogRead(DisBattpin)/102.4);
+  Serial.write(148);  // cursor to Line 2
+  Serial.print("Ard Bat = ");
+  Serial.print(analogRead(ArdBattpin)/102.4);
+  delay(3000);
+}
   
   
-// ------------------------------- basic functions ------------------------------------------------
+// ------------------------------- basic functions ----------------------------------------------------------------------------------------
 
-//Velocity bar graph ...................
+//Velocity bar graph ............draws a velocity bar graph on 4 LED bar graph units. Range on v is -24 to +24 .............................
 void graphV(int v) {
   for (int i=0; i<24; i++) { 
     barVPos.setBar(i,LED_OFF);
@@ -324,7 +326,7 @@ void graphV(int v) {
   barVPos.writeDisplay();
 }  
 
-//Acceleration bar graph ....................
+//Acceleration bar graph ............draws an acceleration bar graph on 2 LED bar graph units. Range on v is -12 to +12 ...........................
 void graphA(int v) {
   for (int i=0; i<12; i++) { 
     barAcc.setBar(i+12,LED_OFF);
@@ -335,24 +337,8 @@ void graphA(int v) {
   barAcc.writeDisplay();
 }  
 
-//Force bar graph ......................
-void graphF(float f) {
-
-  matrixFPos.fillRect(0,0, 8,8, LED_OFF);
-  matrixFNeg.fillRect(0,0, 8,8, LED_OFF);
-  
-  for (int i=0; i<8; i++) { 
-    if (f>i) { matrixFPos.drawLine(0,7-i, 1,7-i, LED_RED);}
-//    else { matrixFPos.drawLine(0,7-i, 7,7-i, LED_OFF) ;}
-    if (-f>i) {matrixFNeg.drawLine(0,i, 1,i, LED_RED);}
-//    else { matrixFNeg.drawLine(0,i, 7,i, LED_OFF) ;}
-  }
-  matrixFPos.writeDisplay();
-  matrixFNeg.writeDisplay();
-}
-//Force bar graph ......................
+//Force fraction bar graph ...................... Makes a wide bar graph. Range on f is -8 to +8.  Also makes part width bars to show fractional values by quarters ........
 void graphF2(float f) {
-
   matrixFPos.fillRect(0,0, 8,8, LED_OFF);  // Clear force matrix
   matrixFNeg.fillRect(0,0, 8,8, LED_OFF);
   int fint = int(f);
@@ -364,21 +350,12 @@ void graphF2(float f) {
   if      (ifrac>0) { matrixFPos.drawLine(4-ifrac, 7-fint, 3+ifrac, 7-fint, LED_RED); } 
   else if (ifrac<0) { matrixFNeg.drawLine(4+ifrac, -fint, 3-ifrac, -fint, LED_RED); }
 
-  
-  Serial.write(128);  //set cursor to home position
-  Serial.print("F=");
-  Serial.print(f);
-  Serial.write(148);  //set cursor to home position
-  Serial.print(fint);
-  Serial.print("=fint frac=");
-  Serial.print(ifrac);
- 
   matrixFPos.writeDisplay();
   matrixFNeg.writeDisplay();  
 }  
 
-
-byte  checkButtons() {   // Return value: 0=Notpressed 1=Up 2=Down 3=Go
+// Check the buttons.............   // Return value: 0=Notpressed 1=Up 2=Down 3=Go ...................................................
+byte  checkButtons() {  
    static byte  butn;   //  "Static" so it keeps its value from one call to the next 
    if (butn != 0) {delay(200);}  // If button was pressed last time, pause to slow repeat speed
    butn = digitalRead(BTN1pin) + 2*digitalRead(BTN2pin);   // Read the 2 button lines and set butn
@@ -389,20 +366,18 @@ byte  checkButtons() {   // Return value: 0=Notpressed 1=Up 2=Down 3=Go
    return (butn);
 }
 
-// -----  Interupt Service Routines  -----------------------------------------------
+// -----  Interupt Service Routines  ----------------------------------------------------------------------------------------------------
 
 // Handler for CW Pin pulse ..................
 void ISR_CW() {
-  time0 = micros();
-  vel0 = veloScale * -distance/(time0 - time1);
-  time1 = time0;
+  currentTime = micros();  // store the current time
+  currentPos--;  // subtract one unit from position.  Each unit is about 0.1 mm
 }
   
   
 // Handler for CCW Pin pulse ..................
 void ISR_CCW() {
-  time0 = micros();
-  vel0 = veloScale * distance/(time0 - time1);
-  time1 = time0;
+  currentTime = micros();   // store the current time
+  currentPos++;  // add one unit to position
 }
 

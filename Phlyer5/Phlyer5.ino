@@ -26,14 +26,15 @@ int DisBattpin = 2;  // Display Battery Voltage input pin
 // initializing variables
 byte buttons = 0;
 byte mainopt = 1;  // Main Menu Option
-int n = 5;  // A number to adjust for testing
+int nReads = 100;  // Number of force readings to average
 int zeroF = 230;  // Forceplate zero level
-long int time0, time1;   // time of this and last interrupt
-long  pos = 0;  // position
-float vel0, vel1;  // this velocity and the last velocity
-float accel0;
-float distance = 50000.0;  // This scales the velocity
-boolean accelTrue;
+long int t0, t1;   // Last time and current time
+long int currentTime; // Current time kept by interrupt routintes in usec
+long int currentPos; // Current position kept by interrupt routines in 0.1 mm
+long  x0, x1 = 0;  // last position adn this position
+float v0, v1 = 0;  // last velocity and this velocity
+float a0, a1 = 0;  // last acceleration and this acceleration
+boolean accelTrue = 1;  // Show the acceleration graph
 float ardBattVoltage;
 float disBattVoltage;
 
@@ -64,11 +65,11 @@ void setup() {
   disBattVoltage = analogRead(DisBattpin) / 102.4;
   Serial.write(12);  // clear display
   delay(1000);
-  Serial.print("Ard Bat = ");
-  Serial.print(ardBattVoltage);
-  Serial.write(148);  // cursor to Line 2
   Serial.print("Dis Bat = ");
   Serial.print(disBattVoltage);
+  Serial.write(148);  // cursor to Line 2
+  Serial.print("Ard Bat = ");
+  Serial.print(ardBattVoltage);
   delay(2500);
    
   // get scale values from eeprom memory
@@ -161,21 +162,6 @@ void toggle(boolean &ctrl, char* label ) {
   delay(2000);
 }
 
-// Adjust a number using the up and down buttons
-void setValue() {
-  Serial.write(12);  // clear display
-  while(1) {
-    Serial.write(128);  //set cursor to home position
-    Serial.print("N = ");
-    Serial.print(n);
-    Serial.print("  ");
-    delay(100);
-    byte buttons = checkButtons();
-    if (buttons == 1) {n++;}  // Up button increments number
-    if (buttons == 2) {n--;}   // Down button decrements number
-    if (buttons == 3) {return;}
-  }
-}
 
 // Adjust a floating value using the up and down buttons with a log scale
 void adjust(float &scale, char* label ) {
@@ -239,10 +225,10 @@ void adjust(float &scale, char* label ) {
 void zeroForce() {
   Serial.write(12);  // clear display
   long int total = 0;
-  for (int i=0; i<20*n; i++) {
+  for (int i=0; i<nReads; i++) {
     total = total + analogRead(Forcepin);
   }
-  zeroF = total / (20*n);
+  zeroF = total / nReads;
   Serial.print("zero = ");
   Serial.print(zeroF);
   Serial.print("  ");
@@ -251,8 +237,8 @@ void zeroForce() {
 
 // Reset scale values to original values
 void resetScaling() {
-  veloScale = 1.0;
-  accelScale = 1.0;
+  veloScale = 10.0;
+  accelScale = 2.0;
   forceScale = 1.0;
 
   // put scale values into eeprom memory
@@ -268,7 +254,7 @@ void everything() {
   int force ;
   long int totalf;
   int shift = 10;  // Time increment for velocities in ms
-  long int time, timePoint;
+  long int time, timePoint, dt;
   float velOld, velNew;
   timePoint = millis() >> shift + 1 << shift; // round off and add one to get new timepoint
 
@@ -279,27 +265,51 @@ void everything() {
   
   while( checkButtons()==0 ) {
   
-    // update velocity and acceleration if we've reached the next timepoint to do so
+    // update values of t,x,v,a if we've reached the next timepoint to do so
     if (millis() >= timePoint) {
-      velOld = velNew;
-      velNew = vel0;
-      accel0 = accelScale * (velNew - velOld);
+      // determine measured values of t,x,v,a
+      t1 = currentTime;   // in microseconds
+      x1 = currentPos;    // in 0.1 mm
+      dt = t1-t0;   //  this will be close to 50,000 usec
+      if(dt>0) {
+        v1 = veloScale * 100 * (x1-x0)/dt;  // in m/s if scale is 1.0
+        a1 = accelScale * 1e6 * (v1-v0)/dt;  // in m/s2 if scale is 1.0
+      }
+      else {
+        v1 = 0;
+        a1 = 0;
+      }
+      Serial.write(128);  //set cursor to home position
+      Serial.print("a=");
+      Serial.print(a1);
+      Serial.write(148);  //set cursor to 2nd line
+      Serial.print("v=");
+      Serial.print(v1);
+ 
+      
+      // determine predicted values of x,v,a
+
+      // weighted average of measured and predicted
+      t0 = t1;
+      x0 = x1;
+      v0 = v1;
+      a0 = a1;
+
       timePoint = millis() + 50;
-//      timePoint = millis() >> shift + 1 << shift; // round off and add one to get new timepoint
     }    
 
-    graphV(int(velNew));
+    graphV(int(v0));
     if (accelTrue) {
-      graphA(int(accel0));
+      graphA(int(a0));
     }
 
-    // show force bar
+    // show force bar ................    Force plate switch to left for max range then xforce is in units of 5 N 
     totalf = 0;
-    for (int i=0; i<20*n; i++) {
+    for (int i=0; i<nReads; i++) {
       force = analogRead(Forcepin) - zeroF;
       totalf = totalf + force;
     }
-    xforce = forceScale * totalf / (20*n);    
+    xforce = forceScale * totalf / nReads;    
     graphF2(xforce);
     
   }
@@ -312,7 +322,7 @@ void everything() {
   
 // ------------------------------- basic functions ------------------------------------------------
 
-//Velocity bar graph ...................
+//Velocity bar graph ............draws a velocity bar graph on 4 LED bar graph units. Range on v is -24 to +24
 void graphV(int v) {
   for (int i=0; i<24; i++) { 
     barVPos.setBar(i,LED_OFF);
@@ -324,7 +334,7 @@ void graphV(int v) {
   barVPos.writeDisplay();
 }  
 
-//Acceleration bar graph ....................
+//Acceleration bar graph ............draws an acceleration bar graph on 2 LED bar graph units. Range on v is -12 to +12
 void graphA(int v) {
   for (int i=0; i<12; i++) { 
     barAcc.setBar(i+12,LED_OFF);
@@ -335,24 +345,8 @@ void graphA(int v) {
   barAcc.writeDisplay();
 }  
 
-//Force bar graph ......................
-void graphF(float f) {
-
-  matrixFPos.fillRect(0,0, 8,8, LED_OFF);
-  matrixFNeg.fillRect(0,0, 8,8, LED_OFF);
-  
-  for (int i=0; i<8; i++) { 
-    if (f>i) { matrixFPos.drawLine(0,7-i, 1,7-i, LED_RED);}
-//    else { matrixFPos.drawLine(0,7-i, 7,7-i, LED_OFF) ;}
-    if (-f>i) {matrixFNeg.drawLine(0,i, 1,i, LED_RED);}
-//    else { matrixFNeg.drawLine(0,i, 7,i, LED_OFF) ;}
-  }
-  matrixFPos.writeDisplay();
-  matrixFNeg.writeDisplay();
-}
-//Force bar graph ......................
+//Force fraction bar graph ...................... Makes a wide bar graph. Range on f is -8 to +8.  Also makes part width bars to show fractional values by quarters
 void graphF2(float f) {
-
   matrixFPos.fillRect(0,0, 8,8, LED_OFF);  // Clear force matrix
   matrixFNeg.fillRect(0,0, 8,8, LED_OFF);
   int fint = int(f);
@@ -364,21 +358,12 @@ void graphF2(float f) {
   if      (ifrac>0) { matrixFPos.drawLine(4-ifrac, 7-fint, 3+ifrac, 7-fint, LED_RED); } 
   else if (ifrac<0) { matrixFNeg.drawLine(4+ifrac, -fint, 3-ifrac, -fint, LED_RED); }
 
-  
-  Serial.write(128);  //set cursor to home position
-  Serial.print("F=");
-  Serial.print(f);
-  Serial.write(148);  //set cursor to home position
-  Serial.print(fint);
-  Serial.print("=fint frac=");
-  Serial.print(ifrac);
- 
   matrixFPos.writeDisplay();
   matrixFNeg.writeDisplay();  
 }  
 
-
-byte  checkButtons() {   // Return value: 0=Notpressed 1=Up 2=Down 3=Go
+// Check the buttons.............   // Return value: 0=Notpressed 1=Up 2=Down 3=Go
+byte  checkButtons() {  
    static byte  butn;   //  "Static" so it keeps its value from one call to the next 
    if (butn != 0) {delay(200);}  // If button was pressed last time, pause to slow repeat speed
    butn = digitalRead(BTN1pin) + 2*digitalRead(BTN2pin);   // Read the 2 button lines and set butn
@@ -393,16 +378,14 @@ byte  checkButtons() {   // Return value: 0=Notpressed 1=Up 2=Down 3=Go
 
 // Handler for CW Pin pulse ..................
 void ISR_CW() {
-  time0 = micros();
-  vel0 = veloScale * -distance/(time0 - time1);
-  time1 = time0;
+  currentTime = micros();  // store the current time
+  currentPos--;  // subtract one unit from position.  Each unit is about 0.1 mm
 }
   
   
 // Handler for CCW Pin pulse ..................
 void ISR_CCW() {
-  time0 = micros();
-  vel0 = veloScale * distance/(time0 - time1);
-  time1 = time0;
+  currentTime = micros();   // store the current time
+  currentPos++;  // add one unit to position
 }
 
