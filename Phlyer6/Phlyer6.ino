@@ -42,9 +42,11 @@ float disBattVoltage;
 float veloScale = 1.0;
 float accelScale = 1.0;
 float forceScale = 1.0;
+float dTime = 1.0;
 int eeAddrVelo = 0;
 int eeAddrAccel = 10;
 int eeAddrForce = 20;
+int eeAddrTime = 30;
 
 void setup() {
   Serial.begin(9600);  // set serial communication for the LCD display:
@@ -63,10 +65,11 @@ void setup() {
 
   batteryVoltages();  // Show the battery voltages on startup
    
-  // get scale values from eeprom memory
+  // get parameter values from eeprom memory
   EEPROM.get( eeAddrVelo, veloScale );
   EEPROM.get( eeAddrAccel, accelScale );
   EEPROM.get( eeAddrForce, forceScale );
+  EEPROM.get( eeAddrTime, dTime );
 
   // Start all the bar and matrix routines
   barVNeg.begin(0x70);
@@ -103,13 +106,14 @@ void loop() {
   if (mainopt == 3) {Serial.print("Scale Velocity  ");}
   if (mainopt == 4) {Serial.print("Scale Accelerate");}
   if (mainopt == 5) {Serial.print("Scale Force     ");}
-  if (mainopt == 6) {Serial.print("Zero Force      ");}  
-  if (mainopt == 7) {Serial.print("Reset Scaling   ");}  
-  if (mainopt == 8) {Serial.print("Battery Voltages");}  
+  if (mainopt == 6) {Serial.print("Zero Force      ");}
+  if (mainopt == 7) {Serial.print("Adj delta time  ");}
+  if (mainopt == 8) {Serial.print("Reset Scaling   ");}  
+  if (mainopt == 9) {Serial.print("Battery Voltages");}  
 
   delay(100);
 
-  #define TOP 8  // This must be set to the number of menu options
+  #define TOP 9  // This must be set to the number of menu options
   
 // check the buttons and respond by changing the menu
   buttons = checkButtons();  // 'buttons' value depends on what was presssed
@@ -127,8 +131,9 @@ void loop() {
       if (mainopt == 4) adjust(accelScale,"Accel");
       if (mainopt == 5) adjust(forceScale,"Force");
       if (mainopt == 6) zeroForce();
-      if (mainopt == 7) resetScaling();
-      if (mainopt == 8) batteryVoltages();
+      if (mainopt == 7) adjust(dTime ,"Time");
+      if (mainopt == 8) resetScaling();
+      if (mainopt == 9) batteryVoltages();
      }
     Serial.write(12);  // button press has been handled so clear before rewriting
     delay(200);    // Wait until button is no longer pressed
@@ -203,6 +208,7 @@ void adjust(float &scale, char* label ) {
       EEPROM.put( eeAddrVelo, veloScale );
       EEPROM.put( eeAddrAccel, accelScale );
       EEPROM.put( eeAddrForce, forceScale );
+      EEPROM.put( eeAddrTime, dTime );
       return;
     }
     scale = factor * decade;
@@ -236,18 +242,19 @@ void resetScaling() {
   veloScale = 56.0;
   accelScale = 0.47;
   forceScale = 0.18;
-
+  dTime = 100.0;
+  
   // put scale values into eeprom memory
   EEPROM.put( eeAddrVelo, veloScale );
   EEPROM.put( eeAddrAccel, accelScale );
   EEPROM.put( eeAddrForce, forceScale );
-  
+  EEPROM.put( eeAddrTime, dTime );
 }
 
 // Everything !! Bar Graph of velocity and Acceleration and Force ...........................................................
 void everything() {
   float fforce; 
-  long int time, timePoint, dt;
+  long int timePoint, dt;
 
   timePoint = millis(); 
 
@@ -263,7 +270,7 @@ void everything() {
       // determine measured values of t,x,v,a
       t1 = currentTime;   // in microseconds
       x1 = currentPos;    // in 0.1 mm
-      dt = t1-t0;   //  this will be close to 50,000 usec
+      dt = t1-t0;   //  this will be close to 100,000 usec if dTime is 100
       if(dt>0) {
         v1 = veloScale * 100 * (x1-x0)/dt;  // in m/s if scale is 1.0
         a1 = accelScale * 1e6 * (v1-v0)/dt;  // in m/s2 if scale is 1.0
@@ -292,7 +299,7 @@ void everything() {
       x0 = x1;
       v0 = v1;
       a0 = a1;
-      timePoint = millis() + 50;
+      timePoint = millis() + dTime;
     }    
     
   }
